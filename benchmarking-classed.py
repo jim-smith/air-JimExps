@@ -16,8 +16,8 @@
 
 
 #%matplotlib inline
-#from IPython.core.display import display, HTML
-#display(HTML("<style>.container { width:100% !important; }</style>"))
+from IPython.core.display import display, HTML
+display(HTML("<style>.container { width:100% !important; }</style>"))
 
 # load and plot dataset
 from math import sqrt
@@ -615,7 +615,10 @@ plt.show()
 
 
 #data, n_test = load_data()
-#model = MLP_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes)
+#maxEpochs =100
+#Repetitions=1
+#model = MLP_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes,lossfcn=mylossfcn)
+#model = LSTM_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes, n_diff = 0,lossfcn=mylossfcn)
 #scores = repeat_evaluate(data, model, n_test,n_repeats=Repetitions)
 #scorearray = np.array(scores)
 #print (scorearray[:,0], scorearray[:,1])
@@ -683,8 +686,8 @@ def Run_Models(useLogs=False, useStandard=False, epochs=2,repeats=2):
 # In[ ]:
 
 
-for mylog in (True,False):
-    for myscaled in (True, False):
+for mylog in (False,True):
+    for myscaled in (False,True ):
         Run_Models(useLogs=mylog, useStandard=myscaled, epochs=1,repeats=2)
 
 
