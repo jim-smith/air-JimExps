@@ -11,6 +11,9 @@
 # Update 10-09-20:
 # Major rewrite  to class-based version for models to tidy things up and so that I can run tests in batch mode
 # 
+# Update 13-10-20: Soraj pointed out that there is a flaw in how the code handles test data since the option to have n_out>1 and lookAhead>1 was standardised. 
+# Fixed by moving all data treatment out of the models, si doing load_data followied by series ot supertvised then trian test split one oafter the other in run_Models() or the equivalent code that sets up an eperiments and runs it
+# 
 
 # In[ ]:
 
@@ -57,7 +60,8 @@ def load_data():
     # summarize shape
     print(series.shape)
     n_test = int(series.shape[0]*0.1)
-    print ( 'setting n_test = {}'.format(n_test))
+    n_train = series.shape[0] - n_test
+    print ( 'setting n_train = {} n_test = {}'.format(n_train,n_test))
     data = series.values
     if(useLogTransform==True):
         data = np.log(data)
@@ -127,31 +131,36 @@ def difference(data, interval):
 
 
 # walk-forward validation for univariate data
-def walk_forward_validation(data, n_test, model):
-    global run
+def walk_forward_validation(train,test, model,n_out):
+    global run,lookAhead
     predictions = list()
-    # split dataset
-    train, test = train_test_split(data, n_test)
     # fit model
     model.fit(train,n_epochs=maxEpochs,batchsize=batchsize)
     
-    # seed history with training dataset
-    history = [x for x in train]
+    # seed history with training dataset 
+    # note that history is a list not an array do that models can choose how much to use
+    train_x, train_y = train[:, :-n_out], train[:, -n_out:]
+    history = train_x.flatten().tolist()
+    #    print("in walk forward n_out = {}, shape of train is {}, shape of train_x is {}, length of history is {}".format(n_out,train.shape,train_x.shape,len(history)))
+    test_x,test_y  = test[:, :-n_out],test[:,-n_out:]
     # step over each time-step in the test set
-    for i in range(len(test)):
+    
+    for i in range(len(test_x)):
+        #print("in walk forward shape of test[i] is {} length of history is {}".format(test[i].shape,len(history)))
         # fit model and make forecast for history
         yhat = model.predict(history)
         # store forecast in list of predictions
         predictions.append(yhat)
         # add actual observation to history for the next loop
-        history.append(test[i])
+        history.extend(test_x[i].flatten().tolist())
+        
     # estimate prediction error
-    error = measure_rmse(test, predictions)
-    mape = measure_mape(test,predictions)
+    error = measure_rmse(test_y, predictions)
+    mape = measure_mape(test_y,predictions)
     print(' run {}, RMSE {},  MAPE {}'.format(run,error,mape))
 
     #save predictions to file
-    outname = 'predictions/' +str(model.lookAhead)+'hr-'+ model.name  +datapartname + '-run' + str(run) +'.csv'
+    outname = 'predictions/' +str(lookAhead)+'hr-'+ model.name  +datapartname + '-run' + str(run) +'.csv'
     np.savetxt(outname,predictions,delimiter=',')
     run = run+1
     return error, mape
@@ -167,11 +176,11 @@ def summarize_scores(name, scores):
     
     
     # repeat evaluation of a config
-def repeat_evaluate(data, model, n_test, n_repeats=1):
+def repeat_evaluate(train,test, model,  n_out=1,n_repeats=1):
     # fit and evaluate the model n times
     global run
     run = 0
-    scores = [walk_forward_validation(data, n_test, model) for _ in range(n_repeats)]
+    scores = [walk_forward_validation(train,test,  model,n_out) for _ in range(n_repeats)]
     return scores
  
 
@@ -232,9 +241,8 @@ class persistent_Model():
 
 
 class MLP_Model():
-    def __init__(self,lookAhead=1,windowlength=1,n_nodes = 25, n_out=1, lossfcn='mse'):
+    def __init__(self,windowlength=1,n_nodes = 25, n_out=1, lossfcn='mse'):
         self.name = 'MLP'
-        self.lookAhead = lookAhead
         self.n_input = windowlength
         self.n_out=n_out
         self.model = Sequential()
@@ -245,8 +253,7 @@ class MLP_Model():
         
     def fit(self,train,n_epochs = 1,batchsize = 1):
         self.batchsize = batchsize
-        data = series_to_supervised(train, n_in=self.n_input, n_out=self.n_out, lookAhead=self.lookAhead)
-        train_x, train_y = data[:, :-self.n_out], data[:, -self.n_out:]
+        train_x, train_y = train[:, :-self.n_out], train[:, -self.n_out:]
         history = self.model.fit(train_x, train_y, epochs=n_epochs, batch_size=self.batchsize, verbose=0)
         print('     training loss = {} '.format(history.history['loss'][n_epochs-1]))
  
@@ -256,7 +263,6 @@ class MLP_Model():
         x_input = np.array(history[-self.n_input:]).reshape(1, self.n_input)
         # forecast
         yhat = self.model.predict(x_input,batch_size=self.batchsize, verbose=0)
-        #TODO: change output to use n_out 
         return yhat[0]
 
 
@@ -276,9 +282,8 @@ class MLP_Model():
 
 class CNN_Model():
     
-    def __init__(self,lookAhead=1,windowlength=1,n_filters = 10,kernelsize=3, n_out=1,lossfcn='mse'):
+    def __init__(self,windowlength=1,n_filters = 10,kernelsize=3, n_out=1,lossfcn='mse'):
         self.name = 'CNN'
-        self.lookAhead = lookAhead
         self.n_input = windowlength
         self.n_out=n_out
         self.model = Sequential()
@@ -291,8 +296,7 @@ class CNN_Model():
         
     def fit(self,train,n_epochs = 1,batchsize = 1):
         self.batchsize = batchsize
-        data = series_to_supervised(train, n_in=self.n_input, n_out=self.n_out, lookAhead=self.lookAhead)
-        train_x, train_y = data[:, :-self.n_out], data[:, -self.n_out:]
+        train_x, train_y = train[:, :-self.n_out], train[:, -self.n_out:]
         ## next line is extra to MLP. and persistent and final 1 is number of predictions to make
         train_x = train_x.reshape((train_x.shape[0], train_x.shape[1], 1))
         history = self.model.fit(train_x, train_y, epochs=n_epochs, batch_size=batchsize, verbose=0)
@@ -324,9 +328,8 @@ class CNN_Model():
 
 
 class LSTM_Model():
-    def __init__(self,lookAhead=1,windowlength=1,n_nodes = 25,n_diff = 0, n_out=1,lossfcn='mse'):
+    def __init__(self,windowlength=1,n_nodes = 25,n_diff = 0, n_out=1,lossfcn='mse'):
         self.name = 'LSTM'
-        self.lookAhead = lookAhead
         self.n_input = windowlength
         self.n_nodes = n_nodes
         self.n_diff = n_diff
@@ -343,8 +346,7 @@ class LSTM_Model():
         # prepare data
         if self.n_diff > 0:
             train = difference(train, self.n_diff)
-        data = series_to_supervised(train, n_in=self.n_input, n_out=self.n_out, lookAhead=self.lookAhead)
-        train_x, train_y = data[:, :-self.n_out], data[:, -self.n_out:]
+        train_x, train_y = train[:, :-self.n_out], train[:, -self.n_out:]
         ## next line is extra to MLP. and persistent and final 1 is number of predictions to make
         train_x = train_x.reshape((train_x.shape[0], train_x.shape[1], 1))
         history = self.model.fit(train_x, train_y, epochs=n_epochs, batch_size=self.batchsize, verbose=0)
@@ -382,9 +384,8 @@ class LSTM_Model():
 
 
 class Stacked_LSTM_Model():
-    def __init__(self,lookAhead=1,windowlength=1,n_nodes = 25,lstmlayers = 2,n_diff = 0, n_out=1,lossfcn='mse'):
+    def __init__(self,windowlength=1,n_nodes = 25,lstmlayers = 2,n_diff = 0, n_out=1,lossfcn='mse'):
         self.name = 'stackedLSTM'
-        self.lookAhead = lookAhead
         self.n_input = windowlength
         self.n_nodes = n_nodes
         self.n_diff = n_diff
@@ -407,8 +408,7 @@ class Stacked_LSTM_Model():
         # prepare data
         if self.n_diff > 0:
             train = difference(train, self.n_diff)
-        data = series_to_supervised(train, n_in=self.n_input, n_out=self.n_out, lookAhead=self.lookAhead)
-        train_x, train_y = data[:, :-self.n_out], data[:, -self.n_out:]
+        train_x, train_y = train[:, :-self.n_out], train[:, -self.n_out:]
         ## next line is extra to MLP. and persistent and final 1 is number of predictions to make
         train_x = train_x.reshape((train_x.shape[0], train_x.shape[1], 1))
         history = self.model.fit(train_x, train_y, epochs=n_epochs, batch_size=batchsize, verbose=0)
@@ -449,9 +449,8 @@ class Stacked_LSTM_Model():
 
 
 class CNN_LSTM_Model():
-    def __init__(self,lookAhead=1,n_seq=1,windowlength=1,n_filters = 25,kernelsize=3,lstmnodes=25,dense_nodes=25, n_out=1,lossfcn='mse'):
+    def __init__(self,n_seq=1,windowlength=1,n_filters = 25,kernelsize=3,lstmnodes=25,dense_nodes=25, n_out=1,lossfcn='mse'):
         self.name = 'CNN_LSTM'
-        self.lookAhead = lookAhead
         self.n_seq=n_seq
         self.n_steps = windowlength
         self.n_input = n_seq*windowlength
@@ -474,8 +473,7 @@ class CNN_LSTM_Model():
     def fit(self,train,n_epochs = 1,batchsize = 1):
         self.batchsize = batchsize
         # prepare data
-        data = series_to_supervised(train, n_in=self.n_input, n_out=self.n_out, lookAhead=self.lookAhead)
-        train_x, train_y = data[:, :-self.n_out], data[:, -self.n_out:]
+        train_x, train_y = train[:, :-self.n_out], train[:, -self.n_out:]
         ## next line is extra to MLP adn nort same as CNN or lstm
         train_x = train_x.reshape((train_x.shape[0], self.n_seq, self.n_steps, 1))
         history = self.model.fit(train_x, train_y, epochs=n_epochs, batch_size=batchsize, verbose=0)
@@ -511,10 +509,9 @@ class CNN_LSTM_Model():
 
 class ConvLSTM_Model():
 
-    def __init__(self,lookAhead=1,n_out=1,n_seq=1,windowlength=1,n_filters = 25,kernelsize=3,dense_nodes=25,lossfcn='mse'):
+    def __init__(self,n_out=1,n_seq=1,windowlength=1,n_filters = 25,kernelsize=3,dense_nodes=25,lossfcn='mse'):
         self.name = 'ConvLSTM'
         self.dimensions=1
-        self.lookAhead = lookAhead
         self.n_seq=n_seq
         self.n_steps = windowlength
         self.n_input = n_seq*windowlength
@@ -539,8 +536,7 @@ class ConvLSTM_Model():
     def fit(self,train,n_epochs = 1,batchsize = 1):
         self.batchsize = batchsize
         # prepare data
-        data = series_to_supervised(train, n_in=self.n_input, n_out=self.n_out, lookAhead=self.lookAhead)
-        train_x, train_y = data[:, :-self.n_out], data[:, -self.n_out:]
+        train_x, train_y = train[:, :-self.n_out], train[:, -self.n_out:]
         ## next line is extra to MLP and is not the same as CNN or lstm
         train_x = train_x.reshape((train_x.shape[0], self.n_seq,self.dimensions, self.n_steps, 1))
         history = self.model.fit(train_x, train_y, epochs=n_epochs, batch_size=batchsize, verbose=0)
@@ -579,6 +575,7 @@ scaler = StandardScaler()
 oneDayLag = 24 
 threeDayLag = 72
 windowSize = oneDayLag
+nsubseq=1 #¢ the number of subsequences that we split our inputr into 
 # number o periods ahead predicted
 lookAhead =24 # the number of periods into the future that the prediction should be
 ##i.e. 1=next hour, 24 = this hour, tomorrow
@@ -615,11 +612,15 @@ plt.show()
 
 
 #data, n_test = load_data()
-#maxEpochs =100
+#inputsize = windowSize*nsubseq
+#aggdata = series_to_supervised(data, n_in=inputsize, n_out=n_out,  lookAhead=lookAhead)
+#train, test = train_test_split(aggdata, n_test)
+#print("sizes of arrays are agg data {}, train {} test {}".format(aggdata.shape,train.shape,test.shape))
+#maxEpochs =10
 #Repetitions=1
-#model = MLP_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes,lossfcn=mylossfcn)
-#model = LSTM_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes, n_diff = 0,lossfcn=mylossfcn)
-#scores = repeat_evaluate(data, model, n_test,n_repeats=Repetitions)
+#model = MLP_Model( windowlength=windowSize, n_nodes = hidden_nodes,lossfcn=mylossfcn)
+#model = LSTM_Model( windowlength=windowSize, n_nodes = hidden_nodes, n_diff = 0,lossfcn=mylossfcn)
+#scores = repeat_evaluate(train,test, model,n_out,n_repeats=Repetitions)
 #scorearray = np.array(scores)
 #print (scorearray[:,0], scorearray[:,1])
 
@@ -641,23 +642,27 @@ def Run_Models(useLogs=False, useStandard=False, epochs=2,repeats=2):
         datapartname = datapartname + '-std'
     print("=======> running: ",datapartname)
     data, n_test = load_data()
+    inputsize = windowSize*nsubseq
+    aggdata = series_to_supervised(data, n_in=inputsize, n_out=n_out,  lookAhead=lookAhead)
+    train, test = train_test_split(aggdata, n_test)
+    
 
     mseresults = DataFrame()
     maperesults = DataFrame()
     colnames = []
 
     model_list = []
-    model_list.append(  persistent_Model(lookAhead= lookAhead, windowlength=windowSize))
-    model_list.append(         MLP_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes,lossfcn=mylossfcn)   )
-    model_list.append(         CNN_Model(lookAhead= lookAhead, windowlength=windowSize, n_filters = hidden_nodes, kernelsize=3,lossfcn=mylossfcn) )
-    model_list.append(        LSTM_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes, n_diff = 0,lossfcn=mylossfcn)  )
-    model_list.append(Stacked_LSTM_Model(lookAhead= lookAhead, windowlength=windowSize, n_nodes = hidden_nodes,lstmlayers = 2,n_diff = 0,lossfcn=mylossfcn))
-    model_list.append(    CNN_LSTM_Model(lookAhead= lookAhead, windowlength=windowSize, n_seq=1,n_filters = hidden_nodes,kernelsize=3,lstmnodes=hidden_nodes,dense_nodes=hidden_nodes,lossfcn=mylossfcn))
-    model_list.append(    ConvLSTM_Model(lookAhead= lookAhead, windowlength=windowSize, n_seq=1,n_filters = hidden_nodes,kernelsize=3,dense_nodes=hidden_nodes,lossfcn=mylossfcn))
+    model_list.append(  persistent_Model( windowlength=windowSize))
+    model_list.append(         MLP_Model( windowlength=windowSize, n_nodes = hidden_nodes,lossfcn=mylossfcn)   )
+    model_list.append(         CNN_Model( windowlength=windowSize, n_filters = hidden_nodes, kernelsize=3,lossfcn=mylossfcn) )
+    model_list.append(        LSTM_Model( windowlength=windowSize, n_nodes = hidden_nodes, n_diff = 0,lossfcn=mylossfcn)  )
+    model_list.append(Stacked_LSTM_Model( windowlength=windowSize, n_nodes = hidden_nodes,lstmlayers = 2,n_diff = 0,lossfcn=mylossfcn))
+    model_list.append(    CNN_LSTM_Model( windowlength=windowSize, n_seq=nsubseq,n_filters = hidden_nodes,kernelsize=3,lstmnodes=hidden_nodes,dense_nodes=hidden_nodes,lossfcn=mylossfcn))
+    model_list.append(    ConvLSTM_Model( windowlength=windowSize, n_seq=nsubseq,n_filters = hidden_nodes,kernelsize=3,dense_nodes=hidden_nodes,lossfcn=mylossfcn))
 
     for model in model_list:
         print ("running ", model.name)
-        scores = repeat_evaluate(data, model, n_test,n_repeats=Repetitions)
+        scores = repeat_evaluate(train,test, model,n_out=n_out, n_repeats=Repetitions)
         scorearray = np.array(scores)
         mseresults[model.name]= Series(scorearray[:,0])
         maperesults[model.name] = Series(scorearray[:,1])
@@ -683,12 +688,20 @@ def Run_Models(useLogs=False, useStandard=False, epochs=2,repeats=2):
     plt.savefig(filename)
 
 
+# # next cell just does one run of each model, the one after does the experiment
+
+# In[ ]:
+
+
+Run_Models(useLogs=False, useStandard=True, epochs=1,repeats=1)
+
+
 # In[ ]:
 
 
 for mylog in (False,True):
-    for myscaled in (False,True ):
-        Run_Models(useLogs=mylog, useStandard=myscaled, epochs=1,repeats=2)
+    for myscaled in (False):#,True ):
+        Run_Models(useLogs=mylog, useStandard=myscaled, epochs=maxEpochs,repeats=Repetitions)
 
 
 # In[ ]:
@@ -706,7 +719,9 @@ def SaveData(useLogs=False, useStandard=False, epochs=2,repeats=2):
         datapartname = datapartname + '-std'
     print("=======> running: ",datapartname)
     data, n_test = load_data()
-    train,test = train_test_split(data,n_test)
+    inputsize = windowSize*nsubseq
+    aggdata = series_to_supervised(data, n_in=inputsize, n_out=n_out,  lookAhead=lookAhead)
+    train, test = train_test_split(aggdata, n_test)
     #save train and test to file
     outname = 'train'  +datapartname +'.csv'
     np.savetxt(outname,train,delimiter=',')
